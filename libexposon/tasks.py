@@ -3,25 +3,27 @@ import jug
 from . import util
 
 
-def map_sasa_core(trajectoryfile, topologyfile, probe_radius):
+def map_sasa_core(trajectoryfile, topologyfile, probe_radius, **kwargs):
     import mdtraj as md
 
     print(
         "computing using threading ", probe_radius, "nm sasa for",
         trajectoryfile, "using topology", topologyfile)
 
+    print(kwargs)
     if topologyfile:
-        trj = md.load(trajectoryfile, top=topologyfile)
+        trj = md.load(trajectoryfile, top=topologyfile, **kwargs)
     else:
-        trj = md.load(trajectoryfile)
+        trj = md.load(trajectoryfile, **kwargs)
     print("loaded", trajectoryfile, 'with topology', topologyfile)
+    print(trj)
     sasas = md.shrake_rupley(trj, probe_radius=probe_radius)
 
     return sasas
 
 
 @jug.TaskGenerator
-def map_sasa_sparse(trajectoryfile, topologyfile, probe_radius, out):
+def map_sasa_sparse(trajectoryfile, topologyfile, probe_radius, out, **kwargs):
 
     import os
     from scipy import sparse
@@ -31,7 +33,10 @@ def map_sasa_sparse(trajectoryfile, topologyfile, probe_radius, out):
     # assert os.path.exists(os.path.dirname(out)), \
     #     "Directory doesn't exist for output %s" % out
 
-    sasas = map_sasa_core(trajectoryfile, topologyfile, probe_radius)
+    if 'stride' in kwargs:
+        sasas = map_sasa_core(trajectoryfile, topologyfile, probe_radius, stride=kwargs['stride'])
+    else:
+        sasas = map_sasa_core(trajectoryfile, topologyfile, probe_radius)
 
     sparse.save_npz(
         file=out,
@@ -138,22 +143,24 @@ def assemble_sasa_h5(sasas, filename):
 
 @jug.TaskGenerator
 def cluster_features(features, assignments, distances, center_features,
-                     center_indices, cluster_radius,
+                     center_indices, cluster_radius=None,
                      cluster_distance='euclidean',
                      algorithm='khybrid',
-                     cluster_iterations=5):
+                     cluster_iterations=5,
+                     **kwargs):
     import os
     import enspara
     import subprocess
 
     center_features = util.set_ext(center_features, '.npy')
-    cluster_executable = util.enspara_path('apps/cluster.py')
+    # cluster_executable = util.enspara_path('apps/cluster.py')
+    cluster_executable = '/project/bowmore/ameller/enspara/enspara/apps/cluster.py'
 
     for f in [assignments, center_indices, distances, center_features]:
         os.makedirs(os.path.dirname(f), exist_ok=True)
-
+    # 'mpiexec',
     args = [
-        'mpiexec', 'python', '-u',
+        'python', '-u',
         cluster_executable,
         '--algorithm', algorithm,
         '--features', features,
@@ -162,8 +169,14 @@ def cluster_features(features, assignments, distances, center_features,
         '--center-features', center_features,
         '--center-indices', center_indices,
         '--cluster-distance', cluster_distance,
-        '--cluster-radius', cluster_radius,
+        # '--cluster-radius', cluster_radius,
     ]
+    if cluster_radius is not None:
+        args += ['--cluster-radius', cluster_radius]
+
+    # Append number of desired cluster centers or target radius
+    for argname in kwargs.keys():
+        args += [f"--{argname.replace('_','-')}", kwargs[argname]]
 
     if algorithm == 'khybrid':
         args += ['--cluster-iterations', str(cluster_iterations)]
@@ -176,7 +189,7 @@ def cluster_features(features, assignments, distances, center_features,
 
 @jug.TaskGenerator
 def write_struct_ctrs(trajectoryfiles, topology, ctr_inds_file,
-                      ctr_structs_file, run_after=None):
+                      ctr_structs_file, run_after=None, stride=1):
 
     import os
     import pickle
@@ -203,7 +216,7 @@ def write_struct_ctrs(trajectoryfiles, topology, ctr_inds_file,
     try:
         lengths, xyz = load_as_concatenated(
             filenames=[trajectoryfiles[tr] for tr, fr in ctr_inds],
-            args=[{'frame': fr, 'top': top} for tr, fr in ctr_inds],
+            args=[{'frame': fr * stride, 'top': top} for tr, fr in ctr_inds],
             processes=4
         )
     except IndexError:
@@ -219,20 +232,23 @@ def write_struct_ctrs(trajectoryfiles, topology, ctr_inds_file,
 
 @jug.TaskGenerator
 def implied_timescales(assignments, plot_path, method='prior_counts',
-                       lag_times='5:200:2'):
+                       lag_times='5:200:2', timestep=100):
     import os
     import subprocess
     timescales_app_location = util.enspara_path('apps/implied_timescales.py')
 
     os.makedirs(os.path.dirname(plot_path), exist_ok=True)
 
+    print(lag_times, timestep)
     subprocess.run(
         ['python', '-u',
          timescales_app_location,
          '--assignments', assignments,
          '--lag-times', lag_times,
+         '--timestep', str(timestep),
          '--symmetrization', method,
          '--plot', plot_path,
+         '--processes', str(128),
          '--logscale'],
         check=True)
 

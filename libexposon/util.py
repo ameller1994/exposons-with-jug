@@ -16,6 +16,9 @@ def set_ext(p, ext):
 def data_stem(tag, probe_radius):
     return f'data/{tag}/features/{tag}-{probe_radius}A-sub1-'
 
+def bowmanlab_data_stem(tag, probe_radius):
+    return f'/project/bowmanlab/ameller/sasa-clustering/{tag}/features/{tag}-{probe_radius}A-sub1-'    
+
 
 def subset_trj(xtc, top, selection):
     import mdtraj as md
